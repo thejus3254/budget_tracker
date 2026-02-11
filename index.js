@@ -16,12 +16,14 @@ const pool = new Pool({
 
 // Middleware
 // Hardcode the Vercel URL to avoid variable typos
-app.use(cors({
-  origin: 'https://budgettracker-frontend.vercel.app', // <--- PASTE YOUR EXACT VERCEL URL HERE (NO SLASH AT END)
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+
+// 1. Import cors at the top
+const cors = require('cors'); 
+
+// 2. Use it BEFORE your routes
+app.use(cors()); 
+// Calling it empty like this means: Allow *, Credentials FALSE.
+// This is the most open, permissive setting possible.
 app.use(express.json());
 
 // JWT Secret
