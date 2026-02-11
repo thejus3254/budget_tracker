@@ -8,14 +8,15 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Database connection
+// 1. DATABASE CONNECTION (Fixed for Render SSL)
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
 // Middleware
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: process.env.CLIENT_URL || '*', // Allow all for now to avoid CORS errors
   credentials: true
 }));
 app.use(express.json());
@@ -41,9 +42,23 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// 2. WELCOME ROUTE (Fixed "Not Found" error)
+app.get('/', (req, res) => {
+    res.json({
+        status: "Online",
+        message: "💰 Budget Tracker API is running!",
+        routes: {
+            register: "POST /api/auth/register",
+            login: "POST /api/auth/login",
+            transactions: "GET /api/transactions"
+        }
+    });
+});
+
 // Initialize database tables
 async function initDatabase() {
   try {
+    // Create Users Table First
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -54,6 +69,7 @@ async function initDatabase() {
       )
     `);
     
+    // Create Transactions Table Second (Depends on Users)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id SERIAL PRIMARY KEY,
@@ -67,9 +83,9 @@ async function initDatabase() {
       )
     `);
     
-    console.log('Database tables initialized');
+    console.log('✅ Database tables initialized');
   } catch (error) {
-    console.error('Database initialization error:', error);
+    console.error('❌ Database initialization error:', error);
   }
 }
 
@@ -82,37 +98,22 @@ function generateToken(user) {
   );
 }
 
-// Auth Routes
+// --- AUTH ROUTES ---
 
 // Register
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
     
-    // Validation
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: 'All fields are required' });
-    }
+    if (!name || !email || !password) return res.status(400).json({ error: 'All fields required' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be 6+ chars' });
     
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    }
+    const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (existingUser.rows.length > 0) return res.status(400).json({ error: 'Email already registered' });
     
-    // Check if user exists
-    const existingUser = await pool.query(
-      'SELECT id FROM users WHERE email = $1',
-      [email.toLowerCase()]
-    );
-    
-    if (existingUser.rows.length > 0) {
-      return res.status(400).json({ error: 'Email already registered' });
-    }
-    
-    // Hash password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     
-    // Create user
     const result = await pool.query(
       'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email',
       [name, email.toLowerCase(), hashedPassword]
@@ -121,14 +122,10 @@ app.post('/api/auth/register', async (req, res) => {
     const user = result.rows[0];
     const token = generateToken(user);
     
-    res.status(201).json({
-      message: 'Registration successful',
-      user: { id: user.id, name: user.name, email: user.email },
-      token
-    });
+    res.status(201).json({ message: 'Registration successful', user, token });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ error: 'Server error during registration' });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -136,66 +133,41 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Required fields missing' });
     
-    // Validation
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-    
-    // Find user
-    const result = await pool.query(
-      'SELECT * FROM users WHERE email = $1',
-      [email.toLowerCase()]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
     
     const user = result.rows[0];
-    
-    // Check password
     const isMatch = await bcrypt.compare(password, user.password);
-    
-    if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
+    if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
     
     const token = generateToken(user);
     
-    res.json({
-      message: 'Login successful',
-      user: { id: user.id, name: user.name, email: user.email },
-      token
+    res.json({ 
+        message: 'Login successful', 
+        user: { id: user.id, name: user.name, email: user.email }, 
+        token 
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Server error during login' });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Get current user
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT id, name, email FROM users WHERE id = $1',
-      [req.user.id]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
+    const result = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.user.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ user: result.rows[0] });
   } catch (error) {
-    console.error('Get user error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Transaction Routes
+// --- TRANSACTION ROUTES ---
 
-// Get all transactions for user
 app.get('/api/transactions', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -204,83 +176,36 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
     );
     res.json(result.rows);
   } catch (error) {
-    console.error('Get transactions error:', error);
     res.status(500).json({ error: 'Failed to fetch transactions' });
   }
 });
 
-// Add transaction
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
     const { type, category, description, amount, date } = req.body;
-    
-    // Validation
-    if (!type || !category || !amount || !date) {
-      return res.status(400).json({ error: 'Type, category, amount and date are required' });
-    }
+    if (!type || !category || !amount || !date) return res.status(400).json({ error: 'Missing fields' });
     
     const result = await pool.query(
       `INSERT INTO transactions (user_id, type, category, description, amount, date) 
-       VALUES ($1, $2, $3, $4, $5, $6) 
-       RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
       [req.user.id, type, category, description || '', amount, date]
     );
-    
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('Add transaction error:', error);
     res.status(500).json({ error: 'Failed to add transaction' });
   }
 });
 
-// Update transaction
-app.put('/api/transactions/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { type, category, description, amount, date } = req.body;
-    
-    // Check if transaction belongs to user
-    const checkResult = await pool.query(
-      'SELECT id FROM transactions WHERE id = $1 AND user_id = $2',
-      [id, req.user.id]
-    );
-    
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    
-    const result = await pool.query(
-      `UPDATE transactions 
-       SET type = $1, category = $2, description = $3, amount = $4, date = $5 
-       WHERE id = $6 AND user_id = $7 
-       RETURNING *`,
-      [type, category, description, amount, date, id, req.user.id]
-    );
-    
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('Update transaction error:', error);
-    res.status(500).json({ error: 'Failed to update transaction' });
-  }
-});
-
-// Delete transaction
 app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    
     const result = await pool.query(
       'DELETE FROM transactions WHERE id = $1 AND user_id = $2 RETURNING id',
       [id, req.user.id]
     );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    
-    res.json({ message: 'Transaction deleted successfully' });
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Transaction not found' });
+    res.json({ message: 'Deleted successfully' });
   } catch (error) {
-    console.error('Delete transaction error:', error);
     res.status(500).json({ error: 'Failed to delete transaction' });
   }
 });
@@ -288,6 +213,6 @@ app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
 // Start server
 initDatabase().then(() => {
   app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 });
