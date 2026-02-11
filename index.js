@@ -15,9 +15,12 @@ const pool = new Pool({
 });
 
 // Middleware
+// Hardcode the Vercel URL to avoid variable typos
 app.use(cors({
-  origin: process.env.CLIENT_URL || '*', // Allow all for now to avoid CORS errors
-  credentials: true
+  origin: 'https://budgettracker-frontend.vercel.app', // <--- PASTE YOUR EXACT VERCEL URL HERE (NO SLASH AT END)
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 
