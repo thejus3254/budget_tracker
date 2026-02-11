@@ -16,10 +16,6 @@ const pool = new Pool({
 
 // Middleware
 // Hardcode the Vercel URL to avoid variable typos
-
-// 1. Import cors at the top
-const cors = require('cors'); 
-
 // 2. Use it BEFORE your routes
 app.use(cors()); 
 // Calling it empty like this means: Allow *, Credentials FALSE.
